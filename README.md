@@ -1,3 +1,5 @@
+<img src="./docs/logo.png" width="400">
+
 # M2
 
 Marketplace Smart Contract for M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K
