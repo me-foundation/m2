@@ -23,9 +23,9 @@ use {
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct MIP1ExecuteSaleV2Args {
-    price: u64,
-    maker_fee_bp: i16,
-    taker_fee_bp: u16,
+    pub price: u64,
+    pub maker_fee_bp: i16,
+    pub taker_fee_bp: u16,
 }
 
 #[derive(Accounts)]

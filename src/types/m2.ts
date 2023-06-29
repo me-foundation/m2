@@ -155,7 +155,7 @@ export type M2 = {
       "accounts": [
         {
           "name": "wallet",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
@@ -2060,7 +2060,7 @@ export const IDL: M2 = {
       "accounts": [
         {
           "name": "wallet",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
