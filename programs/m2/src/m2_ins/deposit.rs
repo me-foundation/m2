@@ -9,6 +9,7 @@ use {
 #[derive(Accounts)]
 #[instruction(escrow_payment_bump: u8)]
 pub struct Deposit<'info> {
+    #[account(mut)]
     wallet: Signer<'info>,
     /// CHECK: notary is not dangerous because we don't read or write from this account
     notary: UncheckedAccount<'info>,

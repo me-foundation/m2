@@ -1,11 +1,11 @@
 #![allow(clippy::result_large_err)]
 
-mod constants;
+pub mod constants;
 mod errors;
 mod m2_ins;
-mod mip1_ins;
+pub mod mip1_ins;
 mod ocp_ins;
-mod states;
+pub mod states;
 mod utils;
 
 use crate::m2_ins::*;

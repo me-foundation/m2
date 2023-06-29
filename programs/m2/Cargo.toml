@@ -20,7 +20,7 @@ anchor-spl = "0.27.0"
 arrayref = "0.3.7"
 winnow = "=0.4.1"
 community-managed-token = { version = "0.2.0", features = ["no-entrypoint"] }
-mpl-token-metadata = { version = "1.10.0", features = ["no-entrypoint"] }
+mpl-token-metadata = { version = "=1.10.0", features = ["no-entrypoint"] }
 mpl-token-auth-rules = { version = "1.3.0", features = ["no-entrypoint"] }
 open_creator_protocol = { version = "0.3.5", features = ["cpi"] }
 solana-program = "1.14.13"
