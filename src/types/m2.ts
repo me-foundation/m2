@@ -1540,6 +1540,50 @@ export type M2 = {
       }
     },
     {
+      "name": "sellerTradeStateV2",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auctionHouseKey",
+            "type": "publicKey"
+          },
+          {
+            "name": "seller",
+            "type": "publicKey"
+          },
+          {
+            "name": "sellerReferral",
+            "type": "publicKey"
+          },
+          {
+            "name": "buyerPrice",
+            "type": "u64"
+          },
+          {
+            "name": "tokenMint",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenAccount",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenSize",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "expiry",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "auctionHouse",
       "type": {
         "kind": "struct",
@@ -3402,6 +3446,50 @@ export const IDL: M2 = {
     },
     {
       "name": "sellerTradeState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "auctionHouseKey",
+            "type": "publicKey"
+          },
+          {
+            "name": "seller",
+            "type": "publicKey"
+          },
+          {
+            "name": "sellerReferral",
+            "type": "publicKey"
+          },
+          {
+            "name": "buyerPrice",
+            "type": "u64"
+          },
+          {
+            "name": "tokenMint",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenAccount",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenSize",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "expiry",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sellerTradeStateV2",
       "type": {
         "kind": "struct",
         "fields": [

@@ -1,6 +1,6 @@
 use anchor_lang::{prelude::*, AnchorDeserialize, Discriminator};
 
-use crate::errors::ErrorCode;
+use crate::{errors::ErrorCode, utils::assert_owned_by};
 
 #[account]
 #[derive(Default, Copy)]
@@ -60,6 +60,48 @@ pub struct SellerTradeState {
 
 impl SellerTradeState {
     pub const LEN: usize = 193; // including the 8 bytes discriminator
+}
+
+#[account]
+#[derive(Default, Copy)]
+pub struct SellerTradeStateV2 {
+    pub auction_house_key: Pubkey,
+    pub seller: Pubkey,
+    pub seller_referral: Pubkey,
+    pub buyer_price: u64,
+    pub token_mint: Pubkey,
+    pub token_account: Pubkey,
+    pub token_size: u64,
+    pub bump: u8,
+    pub expiry: i64, // in unix timestamp in seconds
+}
+
+impl SellerTradeStateV2 {
+    pub const LEN: usize = 8 + // discriminator
+        32 + // auction_house_key
+        32 + // seller
+        32 + // seller_referral
+        8 + // buyer_price
+        32 + // token_mint
+        32 + // token_account
+        8 + // token_size
+        1 + // bump
+        8 + // expiry
+        191; // padding
+
+    pub fn from_sell_args(args: &SellArgs) -> Self {
+        SellerTradeStateV2 {
+            auction_house_key: args.auction_house_key,
+            seller: args.seller,
+            seller_referral: args.seller_referral,
+            buyer_price: args.buyer_price,
+            token_mint: args.token_mint,
+            token_account: args.token_account,
+            token_size: args.token_size,
+            bump: args.bump,
+            expiry: args.expiry,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -168,6 +210,7 @@ impl BidArgs {
     }
 
     pub fn from_account_info(info: &AccountInfo) -> Result<Self> {
+        assert_owned_by(info, &crate::ID)?;
         let mut account_data: &[u8] = &info.try_borrow_data()?;
         let discrimantor = &account_data[0..8];
         if discrimantor == BuyerTradeState::discriminator() {
@@ -195,6 +238,74 @@ impl BidArgs {
                 bump: bts.bump,
                 expiry: bts.expiry,
                 buyer_creator_royalty_bp: bts.buyer_creator_royalty_bp,
+            })
+        } else {
+            Err(ErrorCode::InvalidDiscriminator.into())
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct SellArgs {
+    pub auction_house_key: Pubkey,
+    pub seller: Pubkey,
+    pub seller_referral: Pubkey,
+    pub buyer_price: u64,
+    pub token_mint: Pubkey,
+    pub token_account: Pubkey,
+    pub token_size: u64,
+    pub bump: u8,
+    pub expiry: i64, // in unix timestamp in seconds
+}
+
+impl SellArgs {
+    pub fn check_args(
+        &self,
+        seller_referral: &Pubkey,
+        buyer_price: &u64,
+        token_mint: &Pubkey,
+        token_size: &u64,
+    ) -> Result<()> {
+        if self.seller_referral != *seller_referral
+            || self.buyer_price != *buyer_price
+            || self.token_mint != *token_mint
+            || self.token_size != *token_size
+        {
+            Err(ErrorCode::InvalidAccountState.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn from_account_info(info: &AccountInfo) -> Result<Self> {
+        assert_owned_by(info, &crate::ID)?;
+        let mut account_data: &[u8] = &info.try_borrow_data()?;
+        let discriminator = &account_data[0..8];
+        if discriminator == SellerTradeState::discriminator() {
+            let sts = SellerTradeState::try_deserialize(&mut account_data)?;
+            Ok(SellArgs {
+                auction_house_key: sts.auction_house_key,
+                seller: sts.seller,
+                seller_referral: sts.seller_referral,
+                buyer_price: sts.buyer_price,
+                token_mint: sts.token_mint,
+                token_size: sts.token_size,
+                bump: sts.bump,
+                token_account: sts.token_account,
+                expiry: sts.expiry,
+            })
+        } else if discriminator == SellerTradeStateV2::discriminator() {
+            let sts = SellerTradeStateV2::try_deserialize(&mut account_data)?;
+            Ok(SellArgs {
+                auction_house_key: sts.auction_house_key,
+                seller: sts.seller,
+                seller_referral: sts.seller_referral,
+                buyer_price: sts.buyer_price,
+                token_mint: sts.token_mint,
+                token_size: sts.token_size,
+                bump: sts.bump,
+                token_account: sts.token_account,
+                expiry: sts.expiry,
             })
         } else {
             Err(ErrorCode::InvalidDiscriminator.into())
