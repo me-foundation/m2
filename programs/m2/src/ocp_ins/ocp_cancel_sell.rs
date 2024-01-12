@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use solana_program::sysvar;
 
 use {
@@ -31,6 +29,15 @@ pub struct OCPCancelSell<'info> {
     )]
     token_mint: Account<'info, Mint>,
     /// CHECK: metadata
+    #[account(
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     metadata: UncheckedAccount<'info>,
     #[account(
         seeds=[PREFIX.as_bytes(), auction_house.creator.as_ref()],
@@ -76,7 +83,7 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, OCPCancelSell<'info>>) -> R
     let notary = &ctx.accounts.notary;
     let wallet = &ctx.accounts.wallet;
 
-    let cancel_authority_signed = *notary.key == Pubkey::from_str(CANCEL_AUTHORITY).unwrap();
+    let cancel_authority_signed = *notary.key == CANCEL_AUTHORITY;
     let auction_house_notary_signed = *notary.key == ctx.accounts.auction_house.notary;
 
     if !wallet.is_signer && !cancel_authority_signed {
@@ -103,7 +110,7 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, OCPCancelSell<'info>>) -> R
         &[&[
             PREFIX.as_bytes(),
             SIGNER.as_bytes(),
-            &[*ctx.bumps.get("program_as_signer").unwrap()],
+            &[ctx.bumps.program_as_signer],
         ]],
     ))?;
 
@@ -124,8 +131,6 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, OCPCancelSell<'info>>) -> R
             },
         ))?;
     }
-
-    seller_trade_state.token_size = 0;
 
     msg!(
         "{{\"price\":{},\"seller_expiry\":{}}}",

@@ -79,11 +79,11 @@ pub mod m2 {
 
     pub fn cancel_sell<'info>(
         ctx: Context<'_, '_, '_, 'info, CancelSell<'info>>,
-        _buyer_price: u64,
-        _token_size: u64,
+        buyer_price: u64,
+        token_size: u64,
         seller_state_expiry: i64,
     ) -> Result<()> {
-        m2_ins::cancel_sell::handle(ctx, seller_state_expiry)
+        m2_ins::cancel_sell::handle(ctx, buyer_price, token_size, seller_state_expiry)
     }
 
     pub fn buy<'info>(
@@ -176,19 +176,19 @@ pub mod m2 {
         ctx: Context<'_, '_, '_, 'info, MIP1Sell<'info>>,
         args: MIP1SellArgs,
     ) -> Result<()> {
-        mip1_ins::mip1_sell::handle(ctx, args)
+        mip1_ins::mip1_sell::handle_mip1_sell(ctx, &args)
     }
 
     pub fn mip1_execute_sale_v2<'info>(
         ctx: Context<'_, '_, '_, 'info, MIP1ExecuteSaleV2<'info>>,
         args: MIP1ExecuteSaleV2Args,
     ) -> Result<()> {
-        mip1_ins::mip1_execute_sale_v2::handle(ctx, args)
+        mip1_ins::mip1_execute_sale_v2::handle_mip1_execute_sale(ctx, args)
     }
 
     pub fn mip1_cancel_sell<'info>(
         ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>,
     ) -> Result<()> {
-        mip1_ins::mip1_cancel_sell::handle(ctx)
+        mip1_ins::mip1_cancel_sell::handle_mip1_cancel_sell(ctx)
     }
 }

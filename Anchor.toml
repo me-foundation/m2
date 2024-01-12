@@ -2,27 +2,42 @@
 m2 = "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"
 
 [programs.localnet]
-m2 = "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"
+m2 = { address = "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K", idl = "./target/idl/m2.json" }
 
 [registry]
 url = "https://anchor.projectserum.com"
 
 [provider]
 cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+wallet = "./devkey.json"
 
 [scripts]
-test = "cargo test"
-update_idl = "cp -r ./target/idl ./src && cp -r ./target/types ./src"
+test = "pnpm jest"
+copy_idl = "cp ./target/types/m2.ts ./src/services/m2.ts"
 
 [test.validator]
 url = "https://api.devnet.solana.com"
+
+[test]
+startup_wait = 10000
 
 [[test.validator.clone]]
 address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 
 [[test.validator.clone]]
 address = "auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg"
+
+[[test.validator.clone]]
+address = "creatS3mfzrTGjwuLD1Pa2HXJ1gmq6WXb4ssnwUbJez"
+
+[[test.validator.clone]]
+address = "67breUU4gNRwXdNtMd7Qv7sdtKSaPu1vxWbtGrGm1ywL"
+
+[[test.validator.clone]]
+address = "EBs1boZXeJHZpNxi6WJeWN3sBtZH1fMe5x8owCg2Z4Z7"
+
+[[test.validator.clone]]
+address = "PwDiXFxQsGra4sFFTT8r1QWRMd4vfumiWC1jfWNfdYT"
 
 [[test.validator.clone]]
 address = "CMTQqjzH6Anr9XcPVt73EFDTjWkJWPzH7H6DtvhHcyzV" # community-managed-token
@@ -35,3 +50,22 @@ address = "6Huqrb4xxmmNA4NufYdgpmspoLmjXFd3qEfteCddLgSz" # ocp: policy (allow al
 
 [[test.validator.clone]]
 address = "1BWutmTvYPwDtmw9abTkS4Ssr8no61spGAvW1X6NDix" # program_as_signer cloned from devnet
+
+[[test.validator.clone]]
+address = "E8cU1WiRWjanGxmn96ewBgk9vPTcL6AEZ1t6F6fkgUWe" # auction house cloned from devnet
+
+[[test.validator.clone]]
+address = "FhTFCPwJGDf1BBJBkRkMXPGJGXGicGKWn5TJD2SBc5S4" # sts v1 for normal nft #1, mint kp 1
+
+[[test.validator.clone]]
+address = "2NtkYx4vXt39dmRk86ttCNWhqGCoW868M5jjysV91rPz" # sts v1 for normal nft #2, mint kp 2
+
+[[test.validator.clone]]
+address = "F8MYvj89HSjFSXbjyHVyJBiG4uWPqcRBtpXKBJTTGewh" # sts v1 for pNFT #1, mint kp 3
+
+[[test.validator.clone]]
+address = "9T98XJ5uze2zM4TGdV8vHoFAhRe21Xa2a5GH3caso8SM" # sts v1 for pNFT #2, mint kp 4
+
+[toolchain]
+anchor = "0.29.0"
+solana = "~1.16.0"

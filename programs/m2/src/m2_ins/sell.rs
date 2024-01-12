@@ -1,12 +1,13 @@
 use anchor_lang::Discriminator;
-use solana_program::program::invoke;
+
+use crate::index_ra;
 
 use {
     crate::constants::*,
     crate::errors::ErrorCode,
     crate::states::*,
     crate::utils::*,
-    anchor_lang::{prelude::*, AnchorDeserialize},
+    anchor_lang::prelude::*,
     anchor_spl::{
         associated_token::AssociatedToken,
         token::{Mint, SetAuthority, Token, TokenAccount},
@@ -15,7 +16,6 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(seller_state_bump: u8, program_as_signer_bump: u8, buyer_price: u64, token_size: u64, seller_state_expiry: i64)]
 pub struct Sell<'info> {
     #[account(mut)]
     wallet: Signer<'info>,
@@ -42,10 +42,9 @@ pub struct Sell<'info> {
       bump,
     )]
     auction_house: Account<'info, AuctionHouse>,
+    /// CHECK: checked in seeds
     #[account(
-        init_if_needed,
-        constraint= token_account.mint == token_mint.key(),
-        payer=wallet,
+        mut,
         seeds=[
             PREFIX.as_bytes(),
             wallet.key().as_ref(),
@@ -53,9 +52,9 @@ pub struct Sell<'info> {
             token_ata.key().as_ref(),
             token_mint.key().as_ref(),
         ],
-        space=SellerTradeState::LEN,
-        bump)]
-    seller_trade_state: Box<Account<'info, SellerTradeState>>,
+        bump
+    )]
+    seller_trade_state: UncheckedAccount<'info>,
     /// CHECK: seller_referral
     seller_referral: UncheckedAccount<'info>,
     token_program: Program<'info, Token>,
@@ -65,6 +64,10 @@ pub struct Sell<'info> {
     #[account(seeds=[PREFIX.as_bytes(), SIGNER.as_bytes()], bump)]
     program_as_signer: UncheckedAccount<'info>,
     rent: Sysvar<'info, Rent>,
+    // remaining accounts:
+    // 0. payment_mint (optional) - if the seller wants payment in a SPL token, this is the mint of that token
+    // ...
+    // -1. payer (optional) - this wallet will try to pay for sts rent
 }
 
 pub fn handle<'info>(
@@ -75,91 +78,64 @@ pub fn handle<'info>(
     seller_state_expiry: i64,
 ) -> Result<()> {
     let wallet = &ctx.accounts.wallet;
+    let (remaining_accounts, possible_payer) =
+        split_payer_from_remaining_accounts(ctx.remaining_accounts);
+    let payer = if let Some(p) = possible_payer {
+        p
+    } else {
+        wallet
+    };
     let token_mint = &ctx.accounts.token_mint;
     let metadata = &ctx.accounts.metadata;
-    let seller_trade_state_clone = &ctx.accounts.seller_trade_state.to_account_info();
-    let seller_trade_state = &mut ctx.accounts.seller_trade_state;
+    let seller_trade_state = &ctx.accounts.seller_trade_state;
     let seller_referral = &ctx.accounts.seller_referral;
     let auction_house = &ctx.accounts.auction_house;
     let token_program = &ctx.accounts.token_program;
-    let ata_program = &ctx.accounts.ata_program;
     let system_program = &ctx.accounts.system_program;
-    let rent = &ctx.accounts.rent;
     let program_as_signer = &ctx.accounts.program_as_signer;
     let token_ata = &ctx.accounts.token_ata;
     let token_account = &ctx.accounts.token_account;
+    let payment_mint = if remaining_accounts.len() == 1 {
+        assert_payment_mint(index_ra!(remaining_accounts, 0))?;
+        Some(index_ra!(remaining_accounts, 0))
+    } else {
+        None
+    };
 
-    let token_ata_clone = &ctx.accounts.token_ata.to_account_info();
-    let token_account_clone = &ctx.accounts.token_account.to_account_info();
+    let token_ata_ai = token_ata.as_ref() as &AccountInfo;
+    let token_account_ai = token_account.as_ref() as &AccountInfo;
 
-    let discriminator_ai = seller_trade_state_clone.try_borrow_data()?;
-    if discriminator_ai[..8] != SellerTradeState::discriminator() && discriminator_ai[..8] != [0; 8]
-    {
-        return Err(ErrorCode::InvalidDiscriminator.into());
+    if !seller_trade_state.data_is_empty() {
+        let discriminator_ai = seller_trade_state.try_borrow_data()?;
+        if discriminator_ai[..8] != SellerTradeState::discriminator()
+            && discriminator_ai[..8] != SellerTradeStateV2::discriminator()
+        {
+            return Err(ErrorCode::InvalidDiscriminator.into());
+        }
     }
-
     if token_size > token_account.amount || token_size == 0 {
         return Err(ErrorCode::InvalidTokenAmount.into());
     }
     if buyer_price > MAX_PRICE || buyer_price == 0 {
         return Err(ErrorCode::InvalidPrice.into());
     }
-    if token_account_clone.key != token_ata_clone.key {
-        if token_ata.data_is_empty() {
-            make_ata(
-                token_ata.to_account_info(),
-                wallet.to_account_info(),
-                wallet.to_account_info(),
-                token_mint.to_account_info(),
-                ata_program.to_account_info(),
-                token_program.to_account_info(),
-                system_program.to_account_info(),
-                rent.to_account_info(),
-            )?;
-        }
-
-        invoke(
-            &spl_token::instruction::transfer(
-                token_program.key,
-                &token_account.key(),
-                &token_ata.key(),
-                &wallet.key(),
-                &[],
-                token_size,
-            )?,
-            &[
-                token_account_clone.to_account_info(),
-                token_ata_clone.to_account_info(),
-                wallet.to_account_info(),
-                token_program.to_account_info(),
-            ],
+    if token_account_ai.key != token_ata_ai.key {
+        transfer_token(
+            &1,
+            payer,
+            wallet,
+            wallet,
+            None,
+            DestinationSpecifier::Ai(wallet),
+            token_mint.as_ref(),
+            token_account.as_ref(),
+            token_ata,
+            token_program,
+            system_program,
+            Some(program_as_signer.key),
+            &[],
         )?;
-
-        if token_size == token_account.amount {
-            invoke(
-                &spl_token::instruction::close_account(
-                    token_program.key,
-                    &token_account.key(),
-                    &wallet.key(),
-                    &wallet.key(),
-                    &[],
-                )?,
-                &[
-                    token_account_clone.to_account_info(),
-                    wallet.to_account_info(),
-                    wallet.to_account_info(),
-                    token_program.to_account_info(),
-                ],
-            )?;
-        }
     }
-
-    assert_is_ata(
-        token_ata_clone,
-        &wallet.key(),
-        &token_mint.key(),
-        &program_as_signer.key(),
-    )?;
     assert_metadata_valid(metadata, &token_mint.key())?;
 
     // seller_state_expiry < 0, non-movable listing mode
@@ -168,33 +144,55 @@ pub fn handle<'info>(
     if seller_state_expiry >= 0 {
         return Err(ErrorCode::InvalidExpiry.into());
     }
-    if !is_token_owner(token_ata_clone, &program_as_signer.key())? {
+    if !is_token_owner(token_ata_ai, program_as_signer.key)? {
         anchor_spl::token::set_authority(
             CpiContext::new(
                 token_program.to_account_info(),
                 SetAuthority {
-                    account_or_mint: token_ata_clone.to_account_info(),
+                    account_or_mint: token_ata_ai.to_account_info(),
                     current_authority: wallet.to_account_info(),
                 },
             ),
             AuthorityType::AccountOwner,
             Some(program_as_signer.key()),
         )?;
-    } else if seller_trade_state.token_size == 0 {
+    } else if seller_trade_state.data_is_empty() {
         // so token owner is already program_as_signer, but token_size is 0
         // this is likely a relist from other auction house, not change sell price, we should simply block it
         return Err(ErrorCode::InvalidAccountState.into());
     }
 
-    seller_trade_state.auction_house_key = auction_house.key();
-    seller_trade_state.seller = wallet.key();
-    seller_trade_state.seller_referral = seller_referral.key();
-    seller_trade_state.buyer_price = buyer_price;
-    seller_trade_state.token_mint = token_account.mint;
-    seller_trade_state.token_account = token_ata_clone.key();
-    seller_trade_state.token_size = token_size;
-    seller_trade_state.expiry = seller_state_expiry;
-    seller_trade_state.bump = *ctx.bumps.get("seller_trade_state").unwrap();
+    create_or_realloc_seller_trade_state(
+        seller_trade_state,
+        payer,
+        &[
+            PREFIX.as_bytes(),
+            wallet.key().as_ref(),
+            auction_house.key().as_ref(),
+            token_ata.key().as_ref(),
+            token_mint.key().as_ref(),
+            &[ctx.bumps.seller_trade_state],
+        ],
+    )?;
+    let sts = SellerTradeStateV2 {
+        auction_house_key: auction_house.key(),
+        seller: wallet.key(),
+        seller_referral: seller_referral.key(),
+        buyer_price,
+        token_mint: token_mint.key(),
+        token_account: token_ata_ai.key(),
+        token_size,
+        bump: ctx.bumps.seller_trade_state,
+        expiry: seller_state_expiry,
+        payment_mint: if let Some(m) = payment_mint {
+            *m.key
+        } else {
+            Pubkey::default()
+        },
+    };
+    let sts_v2_serialized = sts.try_to_vec()?;
+    seller_trade_state.try_borrow_mut_data()?[8..8 + sts_v2_serialized.len()]
+        .copy_from_slice(&sts_v2_serialized);
 
     msg!(
         "{{\"price\":{},\"seller_expiry\":{}}}",

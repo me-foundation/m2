@@ -74,6 +74,7 @@ pub struct SellerTradeStateV2 {
     pub token_size: u64,
     pub bump: u8,
     pub expiry: i64, // in unix timestamp in seconds
+    pub payment_mint: Pubkey,
 }
 
 impl SellerTradeStateV2 {
@@ -87,7 +88,8 @@ impl SellerTradeStateV2 {
         8 + // token_size
         1 + // bump
         8 + // expiry
-        191; // padding
+        32 + // payment_mint
+        159; // padding
 
     pub fn from_sell_args(args: &SellArgs) -> Self {
         SellerTradeStateV2 {
@@ -100,6 +102,7 @@ impl SellerTradeStateV2 {
             token_size: args.token_size,
             bump: args.bump,
             expiry: args.expiry,
+            payment_mint: args.payment_mint,
         }
     }
 }
@@ -148,6 +151,7 @@ pub struct BuyerTradeStateV2 {
     pub bump: u8,
     pub expiry: i64,
     pub buyer_creator_royalty_bp: u16,
+    pub payment_mint: Pubkey,
 }
 
 impl BuyerTradeStateV2 {
@@ -161,7 +165,8 @@ impl BuyerTradeStateV2 {
     1 + // bump
     8 + // expiry
     2 + // buyer_creator_ryoalty_bp
-    157; // padding to 320 bytes
+    32 + // payment_mint
+    125; // padding to 320 bytes
 
     pub fn from_bid_args(args: &BidArgs) -> Self {
         BuyerTradeStateV2 {
@@ -174,6 +179,7 @@ impl BuyerTradeStateV2 {
             bump: args.bump,
             expiry: args.expiry,
             buyer_creator_royalty_bp: args.buyer_creator_royalty_bp,
+            payment_mint: args.payment_mint,
         }
     }
 }
@@ -188,6 +194,7 @@ pub struct BidArgs {
     pub bump: u8,
     pub expiry: i64, // in unix timestamp in seconds
     pub buyer_creator_royalty_bp: u16,
+    pub payment_mint: Pubkey,
 }
 
 impl BidArgs {
@@ -197,11 +204,13 @@ impl BidArgs {
         buyer_price: u64,
         token_mint: &Pubkey,
         token_size: u64,
+        payment_mint: &Pubkey,
     ) -> Result<()> {
         if self.buyer_referral != *buyer_referral
             || self.buyer_price != buyer_price
             || self.token_mint != *token_mint
             || self.token_size != token_size
+            || self.payment_mint != *payment_mint
         {
             Err(ErrorCode::InvalidAccountState.into())
         } else {
@@ -225,6 +234,7 @@ impl BidArgs {
                 bump: bts.bump,
                 expiry: bts.expiry,
                 buyer_creator_royalty_bp: 0,
+                payment_mint: Pubkey::default(),
             })
         } else if discrimantor == BuyerTradeStateV2::discriminator() {
             let bts = BuyerTradeStateV2::try_deserialize(&mut account_data)?;
@@ -238,6 +248,7 @@ impl BidArgs {
                 bump: bts.bump,
                 expiry: bts.expiry,
                 buyer_creator_royalty_bp: bts.buyer_creator_royalty_bp,
+                payment_mint: bts.payment_mint,
             })
         } else {
             Err(ErrorCode::InvalidDiscriminator.into())
@@ -256,6 +267,7 @@ pub struct SellArgs {
     pub token_size: u64,
     pub bump: u8,
     pub expiry: i64, // in unix timestamp in seconds
+    pub payment_mint: Pubkey,
 }
 
 impl SellArgs {
@@ -265,11 +277,13 @@ impl SellArgs {
         buyer_price: &u64,
         token_mint: &Pubkey,
         token_size: &u64,
+        payment_mint: &Pubkey,
     ) -> Result<()> {
         if self.seller_referral != *seller_referral
             || self.buyer_price != *buyer_price
             || self.token_mint != *token_mint
             || self.token_size != *token_size
+            || self.payment_mint != *payment_mint
         {
             Err(ErrorCode::InvalidAccountState.into())
         } else {
@@ -293,6 +307,7 @@ impl SellArgs {
                 bump: sts.bump,
                 token_account: sts.token_account,
                 expiry: sts.expiry,
+                payment_mint: Pubkey::default(),
             })
         } else if discriminator == SellerTradeStateV2::discriminator() {
             let sts = SellerTradeStateV2::try_deserialize(&mut account_data)?;
@@ -306,6 +321,7 @@ impl SellArgs {
                 bump: sts.bump,
                 token_account: sts.token_account,
                 expiry: sts.expiry,
+                payment_mint: sts.payment_mint,
             })
         } else {
             Err(ErrorCode::InvalidDiscriminator.into())

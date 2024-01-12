@@ -23,6 +23,15 @@ pub struct Buy<'info> {
     )]
     token_mint: Account<'info, Mint>,
     /// CHECK: metadata
+    #[account(
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     metadata: UncheckedAccount<'info>,
     /// CHECK: escrow_payment_account
     #[account(mut, seeds=[PREFIX.as_bytes(), auction_house.key().as_ref(), wallet.key().as_ref()], bump=escrow_payment_bump)]
@@ -110,7 +119,7 @@ pub fn handle<'info>(
     buyer_trade_state.buyer_price = buyer_price;
     buyer_trade_state.token_mint = token_mint_key;
     buyer_trade_state.token_size = token_size;
-    buyer_trade_state.bump = *ctx.bumps.get("buyer_trade_state").unwrap();
+    buyer_trade_state.bump = ctx.bumps.buyer_trade_state;
     buyer_trade_state.expiry = get_default_buyer_state_expiry(buyer_state_expiry);
     msg!(
         "{{\"price\":{},\"buyer_expiry\":{}}}",

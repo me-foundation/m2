@@ -1,8 +1,7 @@
 use anchor_spl::associated_token::AssociatedToken;
-use mpl_token_metadata::state::{Metadata, TokenMetadataAccount};
+use mpl_token_metadata::accounts::Metadata;
 use open_creator_protocol::state::Policy;
-use solana_program::program::invoke;
-use solana_program::{program::invoke_signed, system_instruction, sysvar};
+use solana_program::sysvar;
 
 use {
     crate::constants::*,
@@ -54,6 +53,15 @@ pub struct OCPExecuteSaleV2<'info> {
     )]
     pub token_mint: Box<Account<'info, Mint>>,
     /// CHECK: metadata
+    #[account(
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     pub metadata: UncheckedAccount<'info>,
     #[account(
         seeds=[PREFIX.as_bytes(), auction_house.creator.as_ref()],
@@ -64,9 +72,9 @@ pub struct OCPExecuteSaleV2<'info> {
     /// CHECK: auction_house_treasury
     #[account(mut, seeds=[PREFIX.as_bytes(), auction_house.key().as_ref(), TREASURY.as_bytes()], bump)]
     pub auction_house_treasury: UncheckedAccount<'info>,
+    /// CHECK: check seeds and check sell_args
     #[account(
         mut,
-        close=seller,
         seeds=[
             PREFIX.as_bytes(),
             seller.key().as_ref(),
@@ -76,7 +84,7 @@ pub struct OCPExecuteSaleV2<'info> {
         ],
         bump,
     )]
-    pub seller_trade_state: Box<Account<'info, SellerTradeState>>,
+    pub seller_trade_state: AccountInfo<'info>,
     /// CHECK: check seeds and check bid_args
     #[account(
         mut,
@@ -137,34 +145,40 @@ pub fn handle<'info>(
 ) -> Result<()> {
     let payer = &ctx.accounts.payer;
     let buyer = &ctx.accounts.buyer;
-    let buyer_key = buyer.key();
     let seller = &ctx.accounts.seller;
     let token_mint = &ctx.accounts.token_mint;
     let metadata = &ctx.accounts.metadata;
     let notary = &ctx.accounts.notary;
-    let seller_trade_state = &mut ctx.accounts.seller_trade_state;
-    let buyer_trade_state = &mut ctx.accounts.buyer_trade_state;
+    let seller_trade_state = &ctx.accounts.seller_trade_state;
+    let buyer_trade_state = &ctx.accounts.buyer_trade_state;
     let buyer_escrow_payment_account = &ctx.accounts.buyer_escrow_payment_account;
     let auction_house = &ctx.accounts.auction_house;
     let auction_house_key = auction_house.key();
     let auction_house_treasury = &ctx.accounts.auction_house_treasury;
     let system_program = &ctx.accounts.system_program;
 
-    let bid_args = BidArgs::from_account_info(&buyer_trade_state.to_account_info())?;
+    let bid_args = BidArgs::from_account_info(buyer_trade_state)?;
     bid_args.check_args(
         &bid_args.buyer_referral,
-        seller_trade_state.buyer_price,
-        &seller_trade_state.token_mint,
-        seller_trade_state.token_size,
+        args.price,
+        &token_mint.key(),
+        1,
+        &Pubkey::default(),
     )?;
-    bid_args.check_args(&bid_args.buyer_referral, args.price, &token_mint.key(), 1)?;
+    let sell_args = SellArgs::from_account_info(seller_trade_state)?;
+    sell_args.check_args(
+        &sell_args.seller_referral,
+        &args.price,
+        &token_mint.key(),
+        &1,
+        &Pubkey::default(),
+    )?;
 
     let clock = Clock::get()?;
     if bid_args.expiry.abs() > 1 && clock.unix_timestamp > bid_args.expiry.abs() {
         return Err(ErrorCode::InvalidExpiry.into());
     }
-    if seller_trade_state.expiry.abs() > 1 && clock.unix_timestamp > seller_trade_state.expiry.abs()
-    {
+    if sell_args.expiry.abs() > 1 && clock.unix_timestamp > sell_args.expiry.abs() {
         return Err(ErrorCode::InvalidExpiry.into());
     }
 
@@ -184,7 +198,7 @@ pub fn handle<'info>(
         &[&[
             PREFIX.as_bytes(),
             SIGNER.as_bytes(),
-            &[*ctx.bumps.get("program_as_signer").unwrap()],
+            &[ctx.bumps.program_as_signer],
         ]],
     ))?;
 
@@ -228,128 +242,61 @@ pub fn handle<'info>(
         &[&[
             PREFIX.as_bytes(),
             SIGNER.as_bytes(),
-            &[*ctx.bumps.get("program_as_signer").unwrap()],
+            &[ctx.bumps.program_as_signer],
         ]],
     ))?;
 
-    let buyer_escrow_signer_seeds = [
+    let buyer_escrow_signer_seeds: &[&[&[u8]]] = &[&[
         PREFIX.as_bytes(),
         auction_house_key.as_ref(),
-        buyer_key.as_ref(),
-        &[*ctx.bumps.get("buyer_escrow_payment_account").unwrap()],
-    ];
+        buyer.key.as_ref(),
+        &[ctx.bumps.buyer_escrow_payment_account],
+    ]];
 
     // buyer pays creator royalties
-    let metadata_parsed = &Metadata::from_account_info(metadata).unwrap();
+    let metadata_parsed = &Metadata::safe_deserialize(&metadata.data.borrow()).unwrap();
     let royalty = pay_creator_fees(
         &mut ctx.remaining_accounts.iter(),
         Some(&ctx.accounts.ocp_policy),
         metadata_parsed,
         &buyer_escrow_payment_account.to_account_info(),
-        system_program,
-        &buyer_escrow_signer_seeds,
+        buyer_escrow_signer_seeds,
         args.price,
         10_000,
+        None,
     )?;
 
-    // payer pays maker/taker fees
-    // seller is payer and taker
-    //   seller as payer pays (maker_fee + taker_fee) to treasury
-    //   buyer as maker needs to pay args.price + maker_fee + royalty
-    //   seller gets (args.price + maker_fee) from buyer
-    // buyer is payer and taker
-    //   buyer as payer pays (maker_fee + taker_fee) to treasury
-    //   buyer as taker needs to pay (args.price + taker_fee + royalty)
-    //   seller gets (args.price - maker_fee) from buyer
     let (actual_maker_fee_bp, actual_taker_fee_bp) =
         get_actual_maker_taker_fee_bp(notary, args.maker_fee_bp, args.taker_fee_bp);
-    let maker_fee = (args.price as i128)
-        .checked_mul(actual_maker_fee_bp as i128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)? as i64;
-    let taker_fee = (args.price as u128)
-        .checked_mul(actual_taker_fee_bp as u128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)? as u64;
-    let seller_will_get_from_buyer = if payer.key.eq(seller.key) {
-        (args.price as i64)
-            .checked_add(maker_fee)
-            .ok_or(ErrorCode::NumericalOverflow)?
-    } else {
-        (args.price as i64)
-            .checked_sub(maker_fee)
-            .ok_or(ErrorCode::NumericalOverflow)?
-    } as u64;
-    let total_platform_fee = (maker_fee
-        .checked_add(taker_fee as i64)
-        .ok_or(ErrorCode::NumericalOverflow)?) as u64;
-
-    invoke_signed(
-        &system_instruction::transfer(
-            buyer_escrow_payment_account.key,
-            seller.key,
-            seller_will_get_from_buyer,
-        ),
-        &[
-            buyer_escrow_payment_account.to_account_info(),
-            seller.to_account_info(),
-            system_program.to_account_info(),
-        ],
-        &[&buyer_escrow_signer_seeds],
+    let (maker_fee, taker_fee) = transfer_listing_payment(
+        args.price,
+        actual_maker_fee_bp,
+        actual_taker_fee_bp,
+        payer,
+        seller,
+        buyer_escrow_payment_account,
+        auction_house_treasury,
+        None,
+        buyer_escrow_signer_seeds,
     )?;
-
-    if total_platform_fee > 0 {
-        if payer.key.eq(seller.key) {
-            invoke(
-                &system_instruction::transfer(
-                    payer.key,
-                    auction_house_treasury.key,
-                    total_platform_fee,
-                ),
-                &[
-                    payer.to_account_info(),
-                    auction_house_treasury.to_account_info(),
-                    system_program.to_account_info(),
-                ],
-            )?;
-        } else {
-            invoke_signed(
-                &system_instruction::transfer(
-                    buyer_escrow_payment_account.key,
-                    auction_house_treasury.key,
-                    total_platform_fee,
-                ),
-                &[
-                    buyer_escrow_payment_account.to_account_info(),
-                    auction_house_treasury.to_account_info(),
-                    system_program.to_account_info(),
-                ],
-                &[&buyer_escrow_signer_seeds],
-            )?;
-        }
-    }
 
     try_close_buyer_escrow(
         buyer_escrow_payment_account,
         buyer,
         system_program,
-        &[&buyer_escrow_signer_seeds],
+        buyer_escrow_signer_seeds,
     )?;
-
-    // zero-out the token_size so that we don't accidentally use it again
-    seller_trade_state.token_size = 0;
 
     // we don't need to zero out buyer_trade_state, just copy zero discriminator to it and then close
     close_account_anchor(buyer_trade_state, buyer)?;
+    close_account_anchor(seller_trade_state, seller)?;
     msg!(
         "{{\"maker_fee\":{},\"taker_fee\":{},\"royalty\":{},\"price\":{},\"seller_expiry\":{},\"buyer_expiry\":{}}}",
         maker_fee,
         taker_fee,
         royalty,
         args.price,
-        seller_trade_state.expiry,
+        sell_args.expiry,
         bid_args.expiry,
     );
 

@@ -1,12 +1,13 @@
 use anchor_lang::Discriminator;
-use mpl_token_metadata::state::{
-    TokenDelegateRole, TokenMetadataAccount, TokenRecord, TokenStandard, TokenState,
+use mpl_token_metadata::{
+    accounts::{Metadata, TokenRecord},
+    types::{TokenDelegateRole, TokenStandard, TokenState},
 };
-use open_creator_protocol::state::Policy;
 use spl_associated_token_account::instruction;
 
 use crate::constants::{
     DEFAULT_BID_EXPIRY_SECONDS_AFTER_NOW, DEFAULT_MAKER_FEE_BP, DEFAULT_TAKER_FEE_BP,
+    VALID_PAYMENT_MINTS,
 };
 
 use {
@@ -24,9 +25,8 @@ use {
     },
     anchor_spl::token::Mint,
     arrayref::array_ref,
-    mpl_token_metadata::state::Metadata,
     spl_associated_token_account::get_associated_token_address,
-    std::{convert::TryInto, slice::Iter},
+    std::convert::TryInto,
 };
 
 pub fn get_default_buyer_state_expiry(buyer_state_expiry: i64) -> i64 {
@@ -61,10 +61,10 @@ pub fn assert_is_ata(
     assert_owned_by(ata, &spl_token::id())?;
     let ata_account: spl_token::state::Account = assert_initialized(ata)?;
     if ata_account.owner != *optional_owner {
-        assert_keys_equal(ata_account.owner, *wallet)?;
+        assert_keys_equal(&ata_account.owner, wallet)?;
     }
-    assert_keys_equal(ata_account.mint, *mint)?;
-    assert_keys_equal(get_associated_token_address(wallet, mint), *ata.key)?;
+    assert_keys_equal(&ata_account.mint, mint)?;
+    assert_keys_equal(&get_associated_token_address(wallet, mint), ata.key)?;
     Ok(ata_account)
 }
 
@@ -81,10 +81,8 @@ pub fn make_ata<'a>(
     payer: AccountInfo<'a>,
     wallet: AccountInfo<'a>,
     mint: AccountInfo<'a>,
-    ata_program: AccountInfo<'a>,
     token_program: AccountInfo<'a>,
     system_program: AccountInfo<'a>,
-    rent: AccountInfo<'a>,
 ) -> Result<()> {
     invoke(
         &instruction::create_associated_token_account(
@@ -93,16 +91,7 @@ pub fn make_ata<'a>(
             mint.key,
             token_program.key,
         ),
-        &[
-            payer,
-            ata,
-            wallet,
-            mint,
-            ata_program,
-            system_program,
-            rent,
-            token_program,
-        ],
+        &[payer, ata, wallet, mint, system_program, token_program],
     )?;
 
     Ok(())
@@ -110,14 +99,15 @@ pub fn make_ata<'a>(
 
 pub fn assert_metadata_valid(metadata: &UncheckedAccount, token_mint: &Pubkey) -> Result<()> {
     assert_derivation(
-        &mpl_token_metadata::id(),
+        &mpl_token_metadata::ID,
         &metadata.to_account_info(),
         &[
-            mpl_token_metadata::state::PREFIX.as_bytes(),
-            mpl_token_metadata::id().as_ref(),
+            Metadata::PREFIX,
+            mpl_token_metadata::ID.as_ref(),
             token_mint.as_ref(),
         ],
     )?;
+    assert_owned_by(metadata, &mpl_token_metadata::ID)?;
     if metadata.data_is_empty() {
         return Err(ErrorCode::MetadataDoesntExist.into());
     }
@@ -179,15 +169,15 @@ pub fn assert_valid_delegation(
                 return Err(ErrorCode::SOLWalletMustSign.into());
             }
 
-            assert_keys_equal(*src_wallet.key, src_account.key())?;
-            assert_keys_equal(*dst_wallet.key, dst_account.key())?;
+            assert_keys_equal(src_wallet.key, src_account.key)?;
+            assert_keys_equal(dst_wallet.key, dst_account.key)?;
         }
     }
 
     Ok(())
 }
 
-pub fn assert_keys_equal(key1: Pubkey, key2: Pubkey) -> Result<()> {
+pub fn assert_keys_equal(key1: &Pubkey, key2: &Pubkey) -> Result<()> {
     if key1 != key2 {
         Err(ErrorCode::PublicKeyMismatch.into())
     } else {
@@ -207,6 +197,14 @@ pub fn assert_initialized<T: Pack + IsInitialized>(account_info: &AccountInfo) -
 pub fn assert_owned_by(account: &AccountInfo, owner: &Pubkey) -> Result<()> {
     if account.owner != owner {
         Err(ErrorCode::IncorrectOwner.into())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn assert_payment_mint(mint_ai: &AccountInfo) -> Result<()> {
+    if !VALID_PAYMENT_MINTS.contains(mint_ai.key) || mint_ai.owner != &spl_token::id() {
+        Err(ErrorCode::InvalidTokenMint.into())
     } else {
         Ok(())
     }
@@ -298,77 +296,18 @@ pub fn pay_auction_house_fees<'a>(
     Ok(treasury_fee)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn pay_creator_fees<'a>(
-    remaining_accounts: &mut Iter<AccountInfo<'a>>,
-    policy: Option<&Account<'a, Policy>>,
-    metadata: &Metadata,
-    escrow_payment_account: &AccountInfo<'a>,
-    system_program: &AccountInfo<'a>,
-    signer_seeds: &[&[u8]],
-    total_price: u64,
-    buyer_creator_royalty_bp: u16,
-) -> Result<u64> {
-    let creators = if let Some(creators) = &metadata.data.creators {
-        creators
-    } else {
-        return Ok(0);
-    };
-
-    if creators.is_empty() {
-        return Ok(0);
-    }
-
-    let royalty_bp = match policy {
-        None => metadata.data.seller_fee_basis_points,
-        Some(p) => match &p.dynamic_royalty {
-            None => metadata.data.seller_fee_basis_points,
-            Some(dynamic_royalty) => {
-                dynamic_royalty.get_royalty_bp(total_price, metadata.data.seller_fee_basis_points)
-            }
-        },
-    };
-
-    let total_fee = (royalty_bp as u128)
-        .checked_mul(total_price as u128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_mul(buyer_creator_royalty_bp as u128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)? as u64;
-    let mut total_fee_paid = 0u64;
-    for creator in creators {
-        let pct = creator.share as u128;
-        let creator_fee = pct
-            .checked_mul(total_fee as u128)
-            .ok_or(ErrorCode::NumericalOverflow)?
-            .checked_div(100)
-            .ok_or(ErrorCode::NumericalOverflow)? as u64;
-        let current_creator_info = next_account_info(remaining_accounts)?;
-        assert_keys_equal(creator.address, *current_creator_info.key)?;
-        if creator_fee + current_creator_info.lamports() >= Rent::get()?.minimum_balance(0) {
-            invoke_signed(
-                &system_instruction::transfer(
-                    escrow_payment_account.key,
-                    current_creator_info.key,
-                    creator_fee,
-                ),
-                &[
-                    escrow_payment_account.clone(),
-                    current_creator_info.clone(),
-                    system_program.clone(),
-                ],
-                &[signer_seeds],
-            )?;
-            total_fee_paid = total_fee_paid
-                .checked_add(creator_fee)
-                .ok_or(ErrorCode::NumericalOverflow)?;
+pub fn split_payer_from_remaining_accounts<'a, 'info>(
+    remaining_accounts: &'a [AccountInfo<'info>],
+) -> (&'a [AccountInfo<'info>], Option<&'a AccountInfo<'info>>) {
+    if let Some((last, rest)) = remaining_accounts.split_last() {
+        if last.is_signer {
+            (rest, Some(last))
+        } else {
+            (remaining_accounts, None)
         }
+    } else {
+        (remaining_accounts, None)
     }
-
-    Ok(total_fee_paid)
 }
 
 /// Cheap method to just grab mint Pubkey from token account, instead of deserializing entire thing
@@ -393,45 +332,42 @@ pub fn get_delegate_from_token_account(token_account_info: &AccountInfo) -> Resu
     }
 }
 
+#[allow(dead_code)]
+pub fn get_balance_from_token_account(token_account_info: &AccountInfo) -> Result<u64> {
+    // TokeAccount layout:   mint(32), owner(32), ...
+    let data = token_account_info.try_borrow_data()?;
+    let balance_data = array_ref![data, 64, 8];
+    Ok(u64::from_le_bytes(*balance_data))
+}
+
 /// Create account almost from scratch, lifted from
 /// https://github.com/solana-labs/solana-program-library/blob/7d4873c61721aca25464d42cc5ef651a7923ca79/associated-token-account/program/src/processor.rs#L51-L98
 #[inline(always)]
 #[allow(dead_code)]
 pub fn create_or_allocate_account_raw<'a>(
-    program_id: Pubkey,
+    program_id: &Pubkey,
     new_account_info: &AccountInfo<'a>,
-    rent_sysvar_info: &AccountInfo<'a>,
-    system_program_info: &AccountInfo<'a>,
     payer_info: &AccountInfo<'a>,
-    size: usize,
+    required_lamports: &u64,
+    size: &usize,
     new_acct_seeds: &[&[u8]],
 ) -> Result<()> {
-    let rent = &Rent::from_account_info(rent_sysvar_info)?;
-    let required_lamports = rent
-        .minimum_balance(size)
-        .max(1)
-        .saturating_sub(new_account_info.lamports());
-
-    if required_lamports > 0 {
+    if *required_lamports > 0 {
         invoke(
-            &system_instruction::transfer(payer_info.key, new_account_info.key, required_lamports),
-            &[
-                payer_info.clone(),
-                new_account_info.clone(),
-                system_program_info.clone(),
-            ],
+            &system_instruction::transfer(payer_info.key, new_account_info.key, *required_lamports),
+            &[payer_info.clone(), new_account_info.clone()],
         )?;
     }
 
-    let accounts = &[new_account_info.clone(), system_program_info.clone()];
+    let accounts = &[new_account_info.clone()];
     invoke_signed(
-        &system_instruction::allocate(new_account_info.key, size.try_into().unwrap()),
+        &system_instruction::allocate(new_account_info.key, (*size).try_into().unwrap()),
         accounts,
         &[new_acct_seeds],
     )?;
 
     invoke_signed(
-        &system_instruction::assign(new_account_info.key, &program_id),
+        &system_instruction::assign(new_account_info.key, program_id),
         accounts,
         &[new_acct_seeds],
     )?;
@@ -478,8 +414,8 @@ pub fn try_close_buyer_escrow<'info>(
 pub fn check_programmable(metadata_parsed: &Metadata) -> Result<()> {
     match metadata_parsed.token_standard {
         None => return Err(ErrorCode::InvalidTokenStandard.into()),
-        Some(t) => {
-            if t != TokenStandard::ProgrammableNonFungible {
+        Some(ref t) => {
+            if *t != TokenStandard::ProgrammableNonFungible {
                 return Err(ErrorCode::InvalidTokenStandard.into());
             }
         }
@@ -501,12 +437,69 @@ pub fn close_account_anchor(info: &AccountInfo, dest: &AccountInfo) -> Result<()
 pub fn get_delegate_info_and_token_state_from_token_record(
     info: &AccountInfo,
 ) -> Result<(Option<Pubkey>, Option<TokenDelegateRole>, TokenState)> {
-    let token_record = TokenRecord::from_account_info(info)?;
+    let token_record = TokenRecord::safe_deserialize(&info.data.borrow())?;
     Ok((
         token_record.delegate,
         token_record.delegate_role,
         token_record.state,
     ))
+}
+
+pub fn create_or_realloc_seller_trade_state<'a>(
+    sts: &AccountInfo<'a>,
+    payer: &AccountInfo<'a>,
+    sts_seeds: &[&[u8]],
+) -> Result<()> {
+    let rent = Rent::get()?;
+    let required_lamports = rent
+        .minimum_balance(SellerTradeStateV2::LEN)
+        .saturating_sub(sts.lamports());
+    if sts.data_is_empty() {
+        // brand new account, need to create it with correct length
+        invoke_signed(
+            &system_instruction::create_account(
+                payer.key,
+                sts.key,
+                required_lamports,
+                SellerTradeStateV2::LEN as u64,
+                &crate::ID,
+            ),
+            &[payer.clone(), sts.clone()],
+            &[sts_seeds],
+        )?;
+
+        sts.try_borrow_mut_data()?[..8].copy_from_slice(&SellerTradeStateV2::discriminator());
+        Ok(())
+    } else if sts.data_len() == SellerTradeState::LEN {
+        // old buyer trade state that we want to migrate
+        // zero out original data
+        sts.try_borrow_mut_data()?
+            .copy_from_slice(&[0; SellerTradeState::LEN]);
+        // reallocate new space
+        sts.realloc(SellerTradeStateV2::LEN, true)?;
+        // transfer lamports so become rent exempt
+        if required_lamports > 0 {
+            invoke(
+                &system_instruction::transfer(payer.key, sts.key, required_lamports),
+                &[payer.clone(), sts.clone()],
+            )?;
+        }
+
+        // write discriminator
+        sts.try_borrow_mut_data()?[0..8].copy_from_slice(&SellerTradeStateV2::discriminator());
+        Ok(())
+    } else if sts.try_borrow_data()?[0..8] == SellerTradeStateV2::discriminator() {
+        Ok(())
+    } else {
+        Err(ErrorCode::InvalidAccountState.into())
+    }
+}
+
+#[macro_export]
+macro_rules! index_ra {
+    ($iter:ident, $i:expr) => {
+        $iter.get($i).ok_or(ErrorCode::MissingRemainingAccount)?
+    };
 }
 
 pub fn create_or_realloc_buyer_trade_state<'a>(
@@ -515,7 +508,9 @@ pub fn create_or_realloc_buyer_trade_state<'a>(
     bts_seeds: &[&[u8]],
 ) -> Result<()> {
     let rent = Rent::get()?;
-    let required_lamports = rent.minimum_balance(BuyerTradeStateV2::LEN);
+    let required_lamports = rent
+        .minimum_balance(BuyerTradeStateV2::LEN)
+        .saturating_sub(bts.lamports());
     if bts.data_is_empty() {
         // brand new account, need to create it with correct length
         invoke_signed(
@@ -524,13 +519,13 @@ pub fn create_or_realloc_buyer_trade_state<'a>(
                 bts.key,
                 required_lamports,
                 BuyerTradeStateV2::LEN as u64,
-                &crate::id(),
+                &crate::ID,
             ),
             &[payer.clone(), bts.clone()],
             &[bts_seeds],
         )?;
 
-        bts.data.borrow_mut()[..8].copy_from_slice(&BuyerTradeStateV2::discriminator());
+        bts.try_borrow_mut_data()?[..8].copy_from_slice(&BuyerTradeStateV2::discriminator());
         Ok(())
     } else if bts.data_len() == BuyerTradeState::LEN {
         // old buyer trade state that we want to migrate
@@ -540,10 +535,9 @@ pub fn create_or_realloc_buyer_trade_state<'a>(
         // reallocate new space
         bts.realloc(BuyerTradeStateV2::LEN, true)?;
         // transfer lamports so become rent exempt
-        let needed_lamports = required_lamports.saturating_sub(bts.lamports());
-        if needed_lamports > 0 {
+        if required_lamports > 0 {
             invoke(
-                &system_instruction::transfer(payer.key, bts.key, needed_lamports),
+                &system_instruction::transfer(payer.key, bts.key, required_lamports),
                 &[payer.clone(), bts.clone()],
             )?;
         }
@@ -566,7 +560,7 @@ mod tests {
     fn assert_keys_equal_returns_ok_when_keys_are_equal() -> Result<()> {
         let pubkey = Pubkey::new_from_array([1; 32]);
         let same_pubkey = Pubkey::new_from_array([1; 32]);
-        assert_keys_equal(pubkey, same_pubkey)
+        assert_keys_equal(&pubkey, &same_pubkey)
     }
 
     #[test]
@@ -595,7 +589,7 @@ mod tests {
         let owner = Pubkey::new_unique();
         let spl_token_account = spl_token::state::Account {
             mint: Pubkey::new_unique(),
-            owner: owner,
+            owner,
             amount: 1,
             delegate: COption::None,
             state: spl_token::state::AccountState::Frozen,
@@ -620,7 +614,7 @@ mod tests {
 
         match assert_initialized::<spl_token::state::Account>(&account_info) {
             Ok(result) => assert_eq!(result, spl_token_account),
-            _ => assert!(false),
+            _ => panic!("expected Ok(spl_token_account)"),
         }
     }
 
@@ -631,8 +625,8 @@ mod tests {
         let owner = spl_token::id();
         let mint = Pubkey::new_unique();
         let spl_token_account = spl_token::state::Account {
-            mint: mint,
-            owner: owner,
+            mint,
+            owner,
             amount: 1,
             delegate: COption::None,
             state: spl_token::state::AccountState::Initialized,
@@ -666,14 +660,14 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         let spl_token_account = spl_token::state::Account {
-            owner: owner,
+            owner,
             amount: 1,
             delegate: COption::None,
             state: spl_token::state::AccountState::Initialized,
             is_native: COption::None,
             delegated_amount: 0,
             close_authority: COption::None,
-            mint: mint,
+            mint,
         };
 
         spl_token::state::Account::pack(spl_token_account, &mut buffer)
@@ -692,7 +686,45 @@ mod tests {
 
         match get_mint_from_token_account(&account_info) {
             Ok(result) => assert_eq!(result, mint),
-            _ => assert!(false),
+            _ => panic!("expected Ok(mint)"),
+        }
+    }
+
+    #[test]
+    fn get_balance_from_token_account_returns_balance() {
+        let mut buffer = vec![0; spl_token::state::Account::get_packed_len()];
+        let mut lamports: u64 = 1;
+        let owner = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let balance: u64 = 10004;
+        let spl_token_account = spl_token::state::Account {
+            owner,
+            amount: balance,
+            delegate: COption::None,
+            state: spl_token::state::AccountState::Initialized,
+            is_native: COption::None,
+            delegated_amount: 0,
+            close_authority: COption::None,
+            mint,
+        };
+
+        spl_token::state::Account::pack(spl_token_account, &mut buffer)
+            .expect("Could not pack SPL token account into buffer");
+
+        let account_info = AccountInfo::new(
+            &owner,
+            false,
+            false,
+            &mut lamports,
+            &mut buffer,
+            &owner,
+            false,
+            4,
+        );
+
+        match get_balance_from_token_account(&account_info) {
+            Ok(result) => assert_eq!(result, balance),
+            _ => panic!("expected Ok(balance)"),
         }
     }
 }
