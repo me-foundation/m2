@@ -68,4 +68,4 @@ address = "9T98XJ5uze2zM4TGdV8vHoFAhRe21Xa2a5GH3caso8SM" # sts v1 for pNFT #2, m
 
 [toolchain]
 anchor = "0.29.0"
-solana = "~1.16.0"
+solana = "1.16.25"
