@@ -9,11 +9,11 @@ url = "https://anchor.projectserum.com"
 
 [provider]
 cluster = "localnet"
-wallet = "./devkey.json"
+wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "pnpm jest"
-copy_idl = "cp ./target/types/m2.ts ./src/services/m2.ts"
+test = "cargo test"
+update_idl = "cp -r ./target/idl ./src && cp -r ./target/types ./src"
 
 [test.validator]
 url = "https://api.devnet.solana.com"
