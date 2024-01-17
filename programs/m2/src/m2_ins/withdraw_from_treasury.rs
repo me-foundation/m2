@@ -60,7 +60,7 @@ pub fn handle<'info>(
         PREFIX.as_bytes(),
         ah_key.as_ref(),
         TREASURY.as_bytes(),
-        &[*ctx.bumps.get("auction_house_treasury").unwrap()],
+        &[ctx.bumps.auction_house_treasury],
     ];
     invoke_signed(
         &system_instruction::transfer(

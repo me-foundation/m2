@@ -156,7 +156,7 @@
         {
           "name": "wallet",
           "isMut": true,
-          "isSigner": true
+          "isSigner": false
         },
         {
           "name": "notary",
@@ -1579,6 +1579,10 @@
           {
             "name": "expiry",
             "type": "i64"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -1679,6 +1683,10 @@
           {
             "name": "buyerCreatorRoyaltyBp",
             "type": "u16"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -1753,6 +1761,30 @@
           {
             "name": "expiry",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DestinationSpecifier",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Key",
+            "fields": [
+              {
+                "defined": "&'refsPubkey"
+              }
+            ]
+          },
+          {
+            "name": "Ai",
+            "fields": [
+              {
+                "defined": "&'refsAccountInfo<'a>"
+              }
+            ]
           }
         ]
       }
@@ -1943,6 +1975,14 @@
       "code": 6036,
       "name": "Deprecated",
       "msg": "Deprecated"
+    },
+    {
+      "code": 6037,
+      "name": "MissingRemainingAccount",
+      "msg": "Missing remaining account"
     }
-  ]
+  ],
+  "metadata": {
+    "address": "M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K"
+  }
 }

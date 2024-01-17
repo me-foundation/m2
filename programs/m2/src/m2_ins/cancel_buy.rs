@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use {
     crate::constants::*, crate::errors::ErrorCode, crate::states::*,
     crate::utils::close_account_anchor, anchor_lang::prelude::*, anchor_spl::token::Mint,
@@ -54,14 +52,14 @@ pub fn handle<'info>(
         buyer_price,
         &bid_args.token_mint,
         token_size,
+        &bid_args.payment_mint, // don't care about payment mint here
     )?;
     if bid_args.expiry != buyer_state_expiry {
         return Err(ErrorCode::InvalidExpiry.into());
     }
 
     // If wallet doesn't sign, notary must be CANCEL_AUTHORITY and also sign.
-    let cancel_authority_signed =
-        notary.is_signer && *notary.key == Pubkey::from_str(CANCEL_AUTHORITY).unwrap();
+    let cancel_authority_signed = notary.is_signer && *notary.key == CANCEL_AUTHORITY;
 
     if !wallet.is_signer && !cancel_authority_signed {
         return Err(ErrorCode::NoValidSignerPresent.into());

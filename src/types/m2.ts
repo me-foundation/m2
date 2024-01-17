@@ -156,7 +156,7 @@ export type M2 = {
         {
           "name": "wallet",
           "isMut": true,
-          "isSigner": true
+          "isSigner": false
         },
         {
           "name": "notary",
@@ -1579,6 +1579,10 @@ export type M2 = {
           {
             "name": "expiry",
             "type": "i64"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -1679,6 +1683,10 @@ export type M2 = {
           {
             "name": "buyerCreatorRoyaltyBp",
             "type": "u16"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -1753,6 +1761,30 @@ export type M2 = {
           {
             "name": "expiry",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DestinationSpecifier",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Key",
+            "fields": [
+              {
+                "defined": "&'refsPubkey"
+              }
+            ]
+          },
+          {
+            "name": "Ai",
+            "fields": [
+              {
+                "defined": "&'refsAccountInfo<'a>"
+              }
+            ]
           }
         ]
       }
@@ -1943,6 +1975,11 @@ export type M2 = {
       "code": 6036,
       "name": "Deprecated",
       "msg": "Deprecated"
+    },
+    {
+      "code": 6037,
+      "name": "MissingRemainingAccount",
+      "msg": "Missing remaining account"
     }
   ]
 };
@@ -2105,7 +2142,7 @@ export const IDL: M2 = {
         {
           "name": "wallet",
           "isMut": true,
-          "isSigner": true
+          "isSigner": false
         },
         {
           "name": "notary",
@@ -3528,6 +3565,10 @@ export const IDL: M2 = {
           {
             "name": "expiry",
             "type": "i64"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -3628,6 +3669,10 @@ export const IDL: M2 = {
           {
             "name": "buyerCreatorRoyaltyBp",
             "type": "u16"
+          },
+          {
+            "name": "paymentMint",
+            "type": "publicKey"
           }
         ]
       }
@@ -3702,6 +3747,30 @@ export const IDL: M2 = {
           {
             "name": "expiry",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DestinationSpecifier",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Key",
+            "fields": [
+              {
+                "defined": "&'refsPubkey"
+              }
+            ]
+          },
+          {
+            "name": "Ai",
+            "fields": [
+              {
+                "defined": "&'refsAccountInfo<'a>"
+              }
+            ]
           }
         ]
       }
@@ -3892,6 +3961,11 @@ export const IDL: M2 = {
       "code": 6036,
       "name": "Deprecated",
       "msg": "Deprecated"
+    },
+    {
+      "code": 6037,
+      "name": "MissingRemainingAccount",
+      "msg": "Missing remaining account"
     }
   ]
 };

@@ -1,13 +1,13 @@
-use mpl_token_auth_rules::payload::{Payload, PayloadType, SeedsVec};
+use std::collections::HashMap;
+
 use mpl_token_metadata::{
-    instruction::{builders::TransferBuilder, InstructionBuilder},
-    processor::AuthorizationData,
-    state::{Metadata, TokenMetadataAccount},
+    accounts::Metadata,
+    instructions::TransferBuilder,
+    types::{AuthorizationData, Payload, PayloadType, SeedsVec, TransferArgs},
 };
-use solana_program::{
-    program::{invoke, invoke_signed},
-    system_instruction, sysvar,
-};
+use solana_program::{program::invoke_signed, sysvar};
+
+use crate::index_ra;
 
 use {
     crate::constants::*,
@@ -31,10 +31,7 @@ pub struct MIP1ExecuteSaleV2Args {
 #[derive(Accounts)]
 #[instruction(args:MIP1ExecuteSaleV2Args)]
 pub struct MIP1ExecuteSaleV2<'info> {
-    #[account(
-      mut,
-      constraint = (payer.key == buyer.key || payer.key == seller.key) @ ErrorCode::SaleRequiresSigner,
-    )]
+    #[account(mut)]
     pub payer: Signer<'info>,
     /// CHECK: buyer
     #[account(mut)]
@@ -62,7 +59,16 @@ pub struct MIP1ExecuteSaleV2<'info> {
     )]
     pub token_mint: Box<Account<'info, Mint>>,
     /// CHECK: metadata
-    #[account(mut)]
+    #[account(
+    mut,
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     pub metadata: UncheckedAccount<'info>,
     #[account(
         seeds=[PREFIX.as_bytes(), auction_house.creator.as_ref()],
@@ -73,9 +79,9 @@ pub struct MIP1ExecuteSaleV2<'info> {
     /// CHECK: auction_house_treasury
     #[account(mut, seeds=[PREFIX.as_bytes(), auction_house.key().as_ref(), TREASURY.as_bytes()], bump)]
     pub auction_house_treasury: UncheckedAccount<'info>,
+    /// CHECK: check seeds and check sell_args
     #[account(
         mut,
-        close=seller,
         seeds=[
             PREFIX.as_bytes(),
             seller.key().as_ref(),
@@ -84,9 +90,8 @@ pub struct MIP1ExecuteSaleV2<'info> {
             token_mint.key().as_ref(),
         ],
         bump,
-        constraint= seller_trade_state.seller_referral == seller_referral.key(),
     )]
-    pub seller_trade_state: Box<Account<'info, SellerTradeState>>,
+    pub seller_trade_state: AccountInfo<'info>,
     /// CHECK: check seeds and check bid_args
     #[account(
         mut,
@@ -119,7 +124,7 @@ pub struct MIP1ExecuteSaleV2<'info> {
     seller_referral: UncheckedAccount<'info>,
 
     /// CHECK: checked by address and in CPI
-    #[account(address = mpl_token_metadata::id())]
+    #[account(address = mpl_token_metadata::ID)]
     token_metadata_program: UncheckedAccount<'info>,
     /// CHECK: checked in CPI
     edition: UncheckedAccount<'info>,
@@ -141,9 +146,21 @@ pub struct MIP1ExecuteSaleV2<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+    // remaining accounts:
+    // ** IF USING NATIVE SOL **
+    // 0..=4. creators (optional) - if the buyer is paying in SOL, these are the creators of the token
+    //
+    // ** IF USING SPL **
+    // 0. payment_mint (required) - if the buyer is paying in a token, this is the mint of that token
+    // 1. payment_source_token_account (required) - escrow token account controlled by escrow_payment_account
+    // 2. payment_seller_token_account (required) - token account controlled by seller
+    // 3. payment_treausry_token_account (required) - token account controlled by auction_house_treasury
+    // 4..=13. creator_token_account (optional) - if the buyer is paying in a SPL token, these are the creator token accounts,
+    //                                            if the creator token accounts are not initialized, the creator itself needs to be
+    //                                            included, in the format of creator_1_ATA, creator_1, creator_2_ATA, creator_2, ...
 }
 
-pub fn handle<'info>(
+pub fn handle_mip1_execute_sale<'info>(
     ctx: Context<'_, '_, '_, 'info, MIP1ExecuteSaleV2<'info>>,
     args: MIP1ExecuteSaleV2Args,
 ) -> Result<()> {
@@ -153,8 +170,8 @@ pub fn handle<'info>(
     let token_mint = &ctx.accounts.token_mint;
     let metadata = &ctx.accounts.metadata;
     let notary = &ctx.accounts.notary;
-    let seller_trade_state = &mut ctx.accounts.seller_trade_state;
-    let buyer_trade_state = &mut ctx.accounts.buyer_trade_state;
+    let seller_trade_state = &ctx.accounts.seller_trade_state;
+    let buyer_trade_state = &ctx.accounts.buyer_trade_state;
     let buyer_escrow_payment_account = &ctx.accounts.buyer_escrow_payment_account;
     let auction_house = &ctx.accounts.auction_house;
     let auction_house_key = auction_house.key();
@@ -173,27 +190,40 @@ pub fn handle<'info>(
     let token_program = &ctx.accounts.token_program;
     let system_program = &ctx.accounts.system_program;
     let instructions = &ctx.accounts.instructions;
+    let remaining_accounts = ctx.remaining_accounts;
 
-    let bid_args = BidArgs::from_account_info(&buyer_trade_state.to_account_info())?;
-    bid_args.check_args(
-        ctx.accounts.buyer_referral.key,
-        seller_trade_state.buyer_price,
-        &seller_trade_state.token_mint,
-        seller_trade_state.token_size,
-    )?;
+    if !buyer.is_signer && !seller.is_signer {
+        return Err(ErrorCode::SaleRequiresSigner.into());
+    }
+    let taker = if buyer.is_signer { buyer } else { seller };
+
+    let bid_args = BidArgs::from_account_info(buyer_trade_state)?;
+    let is_spl = bid_args.payment_mint != Pubkey::default();
     bid_args.check_args(
         ctx.accounts.buyer_referral.key,
         args.price,
         &token_mint.key(),
         1,
+        if is_spl {
+            index_ra!(remaining_accounts, 0).key
+        } else {
+            &bid_args.payment_mint
+        },
+    )?;
+    let sell_args = SellArgs::from_account_info(seller_trade_state)?;
+    sell_args.check_args(
+        ctx.accounts.seller_referral.key,
+        &bid_args.buyer_price,
+        &bid_args.token_mint,
+        &1,
+        &bid_args.payment_mint,
     )?;
 
     let clock = Clock::get()?;
     if bid_args.expiry.abs() > 1 && clock.unix_timestamp > bid_args.expiry.abs() {
         return Err(ErrorCode::InvalidExpiry.into());
     }
-    if seller_trade_state.expiry.abs() > 1 && clock.unix_timestamp > seller_trade_state.expiry.abs()
-    {
+    if sell_args.expiry.abs() > 1 && clock.unix_timestamp > sell_args.expiry.abs() {
         return Err(ErrorCode::InvalidExpiry.into());
     }
 
@@ -202,37 +232,38 @@ pub fn handle<'info>(
     let program_as_signer_seeds = &[
         PREFIX.as_bytes(),
         SIGNER.as_bytes(),
-        &[*ctx.bumps.get("program_as_signer").unwrap()],
+        &[ctx.bumps.program_as_signer],
     ];
-    let payload = Payload::from([(
-        "SourceSeeds".to_owned(),
-        PayloadType::Seeds(SeedsVec {
-            seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
-        }),
-    )]);
+    let payload = Payload {
+        map: HashMap::from([(
+            "SourceSeeds".to_owned(),
+            PayloadType::Seeds(SeedsVec {
+                seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
+            }),
+        )]),
+    };
     let ins = TransferBuilder::new()
         .token(token_account.key())
         .token_owner(token_account.owner)
-        .destination(buyer_receipt_token_account.key())
+        .destination_token(buyer_receipt_token_account.key())
         .destination_owner(buyer.key())
         .mint(token_mint.key())
         .metadata(metadata.key())
-        .edition(edition.key())
-        .owner_token_record(owner_token_record.key())
-        .destination_token_record(destination_token_record.key())
+        .edition(Some(edition.key()))
+        .token_record(Some(owner_token_record.key()))
+        .destination_token_record(Some(destination_token_record.key()))
         .authority(program_as_signer.key())
         .payer(payer.key())
         .system_program(system_program.key())
         .sysvar_instructions(instructions.key())
         .spl_token_program(token_program.key())
         .spl_ata_program(associated_token_program.key())
-        .authorization_rules_program(authorization_rules_program.key())
-        .authorization_rules(authorization_rules.key())
-        .build(mpl_token_metadata::instruction::TransferArgs::V1 {
+        .authorization_rules_program(Some(authorization_rules_program.key()))
+        .authorization_rules(Some(authorization_rules.key()))
+        .transfer_args(TransferArgs::V1 {
             authorization_data: Some(AuthorizationData { payload }),
             amount: 1,
         })
-        .unwrap()
         .instruction();
 
     invoke_signed(
@@ -259,105 +290,68 @@ pub fn handle<'info>(
         &[program_as_signer_seeds],
     )?;
 
-    let buyer_escrow_signer_seeds = [
+    let buyer_escrow_signer_seeds: &[&[&[u8]]] = &[&[
         PREFIX.as_bytes(),
         auction_house_key.as_ref(),
         buyer.key.as_ref(),
-        &[*ctx.bumps.get("buyer_escrow_payment_account").unwrap()],
-    ];
+        &[ctx.bumps.buyer_escrow_payment_account],
+    ]];
 
     // buyer pays creator royalties
-    let metadata_parsed = &Metadata::from_account_info(metadata).unwrap();
+    let metadata_parsed = &Metadata::safe_deserialize(&metadata.data.borrow()).unwrap();
     let royalty = pay_creator_fees(
-        &mut ctx.remaining_accounts.iter(),
+        &mut (if is_spl {
+            remaining_accounts[4..].iter()
+        } else {
+            remaining_accounts.iter()
+        }),
         None,
         metadata_parsed,
         &buyer_escrow_payment_account.to_account_info(),
-        system_program,
-        &buyer_escrow_signer_seeds,
+        buyer_escrow_signer_seeds,
         args.price,
         10_000,
+        if is_spl {
+            Some(TransferCreatorSplArgs {
+                buyer,
+                payer,
+                mint: index_ra!(remaining_accounts, 0),
+                payment_source_token_account: index_ra!(remaining_accounts, 1),
+                system_program,
+                token_program,
+            })
+        } else {
+            None
+        },
     )?;
     check_programmable(metadata_parsed)?;
 
-    // payer pays maker/taker fees
-    // seller is payer and taker
-    //   seller as payer pays (maker_fee + taker_fee) to treasury
-    //   buyer as maker needs to pay args.price + maker_fee + royalty
-    //   seller gets (args.price + maker_fee) from buyer
-    // buyer is payer and taker
-    //   buyer as payer pays (maker_fee + taker_fee) to treasury
-    //   buyer as taker needs to pay (args.price + taker_fee + royalty)
-    //   seller gets (args.price - maker_fee) from buyer
     let (actual_maker_fee_bp, actual_taker_fee_bp) =
         get_actual_maker_taker_fee_bp(notary, args.maker_fee_bp, args.taker_fee_bp);
-    let maker_fee = (args.price as i128)
-        .checked_mul(actual_maker_fee_bp as i128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)? as i64;
-    let taker_fee = (args.price as u128)
-        .checked_mul(actual_taker_fee_bp as u128)
-        .ok_or(ErrorCode::NumericalOverflow)?
-        .checked_div(10000)
-        .ok_or(ErrorCode::NumericalOverflow)? as u64;
-    let seller_will_get_from_buyer = if payer.key.eq(seller.key) {
-        (args.price as i64)
-            .checked_add(maker_fee)
-            .ok_or(ErrorCode::NumericalOverflow)?
-    } else {
-        (args.price as i64)
-            .checked_sub(maker_fee)
-            .ok_or(ErrorCode::NumericalOverflow)?
-    } as u64;
-    let total_platform_fee = (maker_fee
-        .checked_add(taker_fee as i64)
-        .ok_or(ErrorCode::NumericalOverflow)?) as u64;
-
-    invoke_signed(
-        &system_instruction::transfer(
-            buyer_escrow_payment_account.key,
-            seller.key,
-            seller_will_get_from_buyer,
-        ),
-        &[
-            buyer_escrow_payment_account.to_account_info(),
-            seller.to_account_info(),
-            system_program.to_account_info(),
-        ],
-        &[&buyer_escrow_signer_seeds],
-    )?;
-
-    if total_platform_fee > 0 {
-        if payer.key.eq(seller.key) {
-            invoke(
-                &system_instruction::transfer(
-                    payer.key,
-                    auction_house_treasury.key,
-                    total_platform_fee,
-                ),
-                &[
-                    payer.to_account_info(),
-                    auction_house_treasury.to_account_info(),
-                    system_program.to_account_info(),
-                ],
-            )?;
+    let (maker_fee, taker_fee) = transfer_listing_payment(
+        args.price,
+        actual_maker_fee_bp,
+        actual_taker_fee_bp,
+        taker,
+        seller,
+        buyer_escrow_payment_account,
+        auction_house_treasury,
+        if is_spl {
+            Some(TransferListingPaymentSplArgs {
+                payer,
+                buyer,
+                mint: index_ra!(remaining_accounts, 0),
+                payment_source_token_account: index_ra!(remaining_accounts, 1),
+                payment_seller_token_account: index_ra!(remaining_accounts, 2),
+                payment_treasury_token_account: index_ra!(remaining_accounts, 3),
+                system_program,
+                token_program,
+            })
         } else {
-            invoke_signed(
-                &system_instruction::transfer(
-                    buyer_escrow_payment_account.key,
-                    auction_house_treasury.key,
-                    total_platform_fee,
-                ),
-                &[
-                    buyer_escrow_payment_account.to_account_info(),
-                    auction_house_treasury.to_account_info(),
-                    system_program.to_account_info(),
-                ],
-                &[&buyer_escrow_signer_seeds],
-            )?;
-        }
-    }
+            None
+        },
+        buyer_escrow_signer_seeds,
+    )?;
 
     // close token account
     if token_account.amount == 1 && token_account.owner == program_as_signer.key() {
@@ -390,21 +384,19 @@ pub fn handle<'info>(
         buyer_escrow_payment_account,
         buyer,
         system_program,
-        &[&buyer_escrow_signer_seeds],
+        buyer_escrow_signer_seeds,
     )?;
-
-    // zero-out the token_size so that we don't accidentally use it again
-    seller_trade_state.token_size = 0;
 
     // we don't need to zero out buyer_trade_state, just copy zero discriminator to it and then close
     close_account_anchor(buyer_trade_state, buyer)?;
+    close_account_anchor(seller_trade_state, seller)?;
     msg!(
         "{{\"maker_fee\":{},\"taker_fee\":{},\"royalty\":{},\"price\":{},\"seller_expiry\":{},\"buyer_expiry\":{}}}",
         maker_fee,
         taker_fee,
         royalty,
         args.price,
-        seller_trade_state.expiry,
+        sell_args.expiry,
         bid_args.expiry,
     );
 

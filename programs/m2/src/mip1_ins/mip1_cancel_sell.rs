@@ -1,13 +1,14 @@
-use mpl_token_auth_rules::payload::{Payload, PayloadType, SeedsVec};
+use std::collections::HashMap;
+
 use mpl_token_metadata::{
-    instruction::{builders::TransferBuilder, InstructionBuilder},
-    processor::AuthorizationData,
-    state::{Metadata, TokenMetadataAccount},
+    accounts::Metadata,
+    instructions::TransferBuilder,
+    types::{AuthorizationData, Payload, PayloadType, SeedsVec, TransferArgs},
 };
 use solana_program::sysvar;
 use spl_associated_token_account::get_associated_token_address;
 
-use crate::utils::{assert_is_ata, check_programmable};
+use crate::utils::{assert_is_ata, check_programmable, close_account_anchor};
 use {
     crate::constants::*,
     crate::errors::ErrorCode,
@@ -39,7 +40,16 @@ pub struct MIP1CancelSell<'info> {
     )]
     token_mint: Account<'info, Mint>,
     /// CHECK: metadata
-    #[account(mut)]
+    #[account(
+    mut,
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     metadata: UncheckedAccount<'info>,
     #[account(
         seeds=[PREFIX.as_bytes(), auction_house.creator.as_ref()],
@@ -47,9 +57,9 @@ pub struct MIP1CancelSell<'info> {
         bump,
     )]
     auction_house: Box<Account<'info, AuctionHouse>>,
+    /// CHECK: seeds check and check args
     #[account(
         mut,
-        close=wallet,
         seeds=[
             PREFIX.as_bytes(),
             wallet.key().as_ref(),
@@ -57,8 +67,9 @@ pub struct MIP1CancelSell<'info> {
             token_ata.key().as_ref(),
             token_mint.key().as_ref(),
         ],
-        bump)]
-    seller_trade_state: Box<Account<'info, SellerTradeState>>,
+        bump
+    )]
+    seller_trade_state: AccountInfo<'info>,
     /// CHECK: checked in CPI - account that will end up with the token
     /// should always be ATA of (mint, wallet)
     #[account(mut, address = get_associated_token_address(wallet.key, &token_mint.key()))]
@@ -72,7 +83,7 @@ pub struct MIP1CancelSell<'info> {
     temp_token_record: UncheckedAccount<'info>,
 
     /// CHECK: checked by address and in CPI
-    #[account(address = mpl_token_metadata::id())]
+    #[account(address = mpl_token_metadata::ID)]
     token_metadata_program: UncheckedAccount<'info>,
     /// CHECK: checked in CPI
     edition: UncheckedAccount<'info>,
@@ -95,14 +106,16 @@ pub struct MIP1CancelSell<'info> {
     system_program: Program<'info, System>,
 }
 
-pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>) -> Result<()> {
-    let seller_trade_state = &mut ctx.accounts.seller_trade_state;
+pub fn handle_mip1_cancel_sell<'info>(
+    ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>,
+) -> Result<()> {
+    let seller_trade_state = &ctx.accounts.seller_trade_state;
     let wallet = &ctx.accounts.wallet;
     let token_account = &ctx.accounts.token_account;
     let program_as_signer = &ctx.accounts.program_as_signer;
     let token_ata = &ctx.accounts.token_ata;
     let token_account_temp = &ctx.accounts.token_account_temp;
-    let token_mint = &ctx.accounts.token_mint;
+    let token_mint = ctx.accounts.token_mint.as_ref() as &AccountInfo;
     let metadata = &ctx.accounts.metadata;
     let edition = &ctx.accounts.edition;
     let token_program = &ctx.accounts.token_program;
@@ -115,52 +128,60 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>) -> 
     let destination_token_record = &ctx.accounts.destination_token_record;
     let temp_token_record = &ctx.accounts.temp_token_record;
 
-    check_programmable(&Metadata::from_account_info(metadata).unwrap())?;
+    let sell_args = SellArgs::from_account_info(seller_trade_state)?;
+    sell_args.check_args(
+        &sell_args.seller_referral,
+        &sell_args.buyer_price,
+        token_mint.key,
+        &token_ata.amount,
+        &sell_args.payment_mint, // don't care about payment mint here
+    )?;
+
+    check_programmable(&Metadata::safe_deserialize(&metadata.data.borrow()).unwrap())?;
 
     let program_as_signer_seeds = &[
         PREFIX.as_bytes(),
         SIGNER.as_bytes(),
-        &[*ctx.bumps.get("program_as_signer").unwrap()],
+        &[ctx.bumps.program_as_signer],
     ];
     let source_token_account = if token_ata.key().eq(token_account.key) {
         // mip0 -> mip1 migration, need to move to temp token account
-        let payload = Payload::from([
-            (
-                "SourceSeeds".to_owned(),
-                PayloadType::Seeds(SeedsVec {
-                    seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
-                }),
-            ),
-            (
-                "DestinationSeeds".to_owned(),
-                PayloadType::Seeds(SeedsVec {
-                    seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
-                }),
-            ),
-        ]);
+        let mut payload_map = HashMap::new();
+        payload_map.insert(
+            "SourceSeeds".to_owned(),
+            PayloadType::Seeds(SeedsVec {
+                seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
+            }),
+        );
+        payload_map.insert(
+            "DestinationSeeds".to_owned(),
+            PayloadType::Seeds(SeedsVec {
+                seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
+            }),
+        );
+        let payload = Payload { map: payload_map };
         let ins = TransferBuilder::new()
             .token(token_ata.key())
             .token_owner(token_ata.owner)
-            .destination(token_account_temp.key())
+            .destination_token(token_account_temp.key())
             .destination_owner(program_as_signer.key())
             .mint(token_mint.key())
             .metadata(metadata.key())
-            .edition(edition.key())
-            .owner_token_record(owner_token_record.key())
-            .destination_token_record(temp_token_record.key())
+            .edition(Some(edition.key()))
+            .token_record(Some(owner_token_record.key()))
+            .destination_token_record(Some(temp_token_record.key()))
             .authority(program_as_signer.key())
             .payer(wallet.key())
             .system_program(system_program.key())
             .sysvar_instructions(instructions.key())
             .spl_token_program(token_program.key())
             .spl_ata_program(associated_token_program.key())
-            .authorization_rules_program(authorization_rules_program.key())
-            .authorization_rules(authorization_rules.key())
-            .build(mpl_token_metadata::instruction::TransferArgs::V1 {
+            .authorization_rules_program(Some(authorization_rules_program.key()))
+            .authorization_rules(Some(authorization_rules.key()))
+            .transfer_args(TransferArgs::V1 {
                 authorization_data: Some(AuthorizationData { payload }),
                 amount: 1,
             })
-            .unwrap()
             .instruction();
 
         invoke_signed(
@@ -202,35 +223,36 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>) -> 
         token_ata.to_account_info()
     };
 
-    let payload = Payload::from([(
-        "SourceSeeds".to_owned(),
-        PayloadType::Seeds(SeedsVec {
-            seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
-        }),
-    )]);
+    let payload = Payload {
+        map: HashMap::from([(
+            "SourceSeeds".to_owned(),
+            PayloadType::Seeds(SeedsVec {
+                seeds: vec![PREFIX.as_bytes().to_vec(), SIGNER.as_bytes().to_vec()],
+            }),
+        )]),
+    };
     let ins = TransferBuilder::new()
         .token(source_token_account.key())
         .token_owner(program_as_signer.key())
-        .destination(token_account.key())
+        .destination_token(token_account.key())
         .destination_owner(wallet.key())
         .mint(token_mint.key())
         .metadata(metadata.key())
-        .edition(edition.key())
-        .owner_token_record(temp_token_record.key())
-        .destination_token_record(destination_token_record.key())
+        .edition(Some(edition.key()))
+        .token_record(Some(temp_token_record.key()))
+        .destination_token_record(Some(destination_token_record.key()))
         .authority(program_as_signer.key())
         .payer(wallet.key())
         .system_program(system_program.key())
         .sysvar_instructions(instructions.key())
         .spl_token_program(token_program.key())
         .spl_ata_program(associated_token_program.key())
-        .authorization_rules_program(authorization_rules_program.key())
-        .authorization_rules(authorization_rules.key())
-        .build(mpl_token_metadata::instruction::TransferArgs::V1 {
+        .authorization_rules_program(Some(authorization_rules_program.key()))
+        .authorization_rules(Some(authorization_rules.key()))
+        .transfer_args(TransferArgs::V1 {
             authorization_data: Some(AuthorizationData { payload }),
             amount: 1,
         })
-        .unwrap()
         .instruction();
 
     invoke_signed(
@@ -275,14 +297,9 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>) -> 
         )?;
     }
 
-    assert_is_ata(
-        token_account,
-        &wallet.key(),
-        &token_mint.key(),
-        &wallet.key(),
-    )?;
+    assert_is_ata(token_account, wallet.key, token_mint.key, wallet.key)?;
 
-    seller_trade_state.token_size = 0;
+    close_account_anchor(seller_trade_state, wallet)?;
 
     msg!(
         "mip1_cancel_sell: {{\"seller_trade_state\":\"{}\",\"token_account\":\"{}\"}}",
@@ -291,8 +308,8 @@ pub fn handle<'info>(ctx: Context<'_, '_, '_, 'info, MIP1CancelSell<'info>>) -> 
     );
     msg!(
         "{{\"price\":{},\"seller_expiry\":{}}}",
-        seller_trade_state.buyer_price,
-        seller_trade_state.expiry
+        sell_args.buyer_price,
+        sell_args.expiry
     );
     Ok(())
 }

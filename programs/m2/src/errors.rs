@@ -113,4 +113,6 @@ pub enum ErrorCode {
     // 336
     #[msg("Deprecated")]
     Deprecated,
+    #[msg("Missing remaining account")]
+    MissingRemainingAccount,
 }

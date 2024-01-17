@@ -37,6 +37,15 @@ pub struct OCPSell<'info> {
     )]
     token_mint: Account<'info, Mint>,
     /// CHECK: check in cpi
+    #[account(
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     metadata: UncheckedAccount<'info>,
     #[account(
         seeds=[PREFIX.as_bytes(), auction_house.creator.as_ref()],
@@ -162,7 +171,7 @@ pub fn handle<'info>(
     seller_trade_state.token_mint = token_mint_key;
     seller_trade_state.token_account = token_ata_key;
     seller_trade_state.token_size = 1;
-    seller_trade_state.bump = *ctx.bumps.get("seller_trade_state").unwrap();
+    seller_trade_state.bump = ctx.bumps.seller_trade_state;
     seller_trade_state.expiry = args.expiry; // negative number means non-movable listing mode
 
     msg!(

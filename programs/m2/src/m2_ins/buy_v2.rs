@@ -1,6 +1,8 @@
 use anchor_lang::Discriminator;
 use solana_program::{program::invoke, system_instruction};
 
+use crate::index_ra;
+
 use {
     crate::constants::*,
     crate::errors::ErrorCode,
@@ -22,6 +24,15 @@ pub struct BuyV2<'info> {
     )]
     token_mint: Account<'info, Mint>,
     /// CHECK: metadata
+    #[account(
+    seeds = [
+        "metadata".as_bytes(),
+        mpl_token_metadata::ID.as_ref(),
+        token_mint.key().as_ref(),
+    ],
+    bump,
+    seeds::program = mpl_token_metadata::ID,
+    )]
     metadata: UncheckedAccount<'info>,
     /// CHECK: escrow_payment_account
     #[account(mut, seeds=[PREFIX.as_bytes(), auction_house.key().as_ref(), wallet.key().as_ref()], bump)]
@@ -45,6 +56,11 @@ pub struct BuyV2<'info> {
     buyer_referral: UncheckedAccount<'info>,
     token_program: Program<'info, Token>,
     system_program: Program<'info, System>,
+    // remaining accounts:
+    // 0. payment_mint (optional) - if the buyer is paying in a token, this is the mint of that token
+    // 1. payment_source_token_account (optional) - if the buyer is paying in a token, this is the source token account, we need to verify sufficient balance
+    // ...
+    // -1. payer (optional) - this wallet will try to subsidize SOL for the buyer if bidding in SOL, and will pay for bts rent
 }
 
 pub fn handle<'info>(
@@ -55,14 +71,21 @@ pub fn handle<'info>(
     buyer_creator_royalty_bp: u16,
     _extra_args: &[u8],
 ) -> Result<()> {
-    let wallet = &ctx.accounts.wallet;
+    let (remaining_accounts, possible_payer) =
+        split_payer_from_remaining_accounts(ctx.remaining_accounts);
+    let payer = if let Some(p) = possible_payer {
+        p
+    } else {
+        &ctx.accounts.wallet
+    };
     let metadata = &ctx.accounts.metadata;
     let token_mint = &ctx.accounts.token_mint;
     let escrow_payment_account = &ctx.accounts.escrow_payment_account;
     let auction_house = &ctx.accounts.auction_house;
     let buyer_referral = &ctx.accounts.buyer_referral;
-    let buyer_trade_state = &mut ctx.accounts.buyer_trade_state;
+    let buyer_trade_state = &ctx.accounts.buyer_trade_state;
     let system_program = &ctx.accounts.system_program;
+    let is_spl = remaining_accounts.len() == 2;
 
     if buyer_trade_state.data_len() > 0 {
         let discriminator_data = &buyer_trade_state.try_borrow_data()?[0..8];
@@ -81,39 +104,56 @@ pub fn handle<'info>(
         return Err(ErrorCode::InvalidPrice.into());
     }
 
-    if escrow_payment_account.lamports() < buyer_price {
-        let diff = buyer_price
-            .checked_sub(escrow_payment_account.lamports())
-            .ok_or(ErrorCode::NumericalOverflow)?;
-        invoke(
-            &system_instruction::transfer(&wallet.key(), &escrow_payment_account.key(), diff),
-            &[
-                wallet.to_account_info(),
-                escrow_payment_account.to_account_info(),
-                system_program.to_account_info(),
-            ],
+    if remaining_accounts.is_empty() {
+        // SOL
+        if escrow_payment_account.lamports() < buyer_price {
+            let diff = buyer_price
+                .checked_sub(escrow_payment_account.lamports())
+                .ok_or(ErrorCode::NumericalOverflow)?;
+            invoke(
+                &system_instruction::transfer(payer.key, &escrow_payment_account.key(), diff),
+                &[
+                    payer.to_account_info(),
+                    escrow_payment_account.to_account_info(),
+                    system_program.to_account_info(),
+                ],
+            )?;
+        }
+    } else if is_spl {
+        // SPL
+        assert_payment_mint(index_ra!(remaining_accounts, 0))?;
+        let payment_token_account_parsed = assert_is_ata(
+            index_ra!(remaining_accounts, 1),
+            escrow_payment_account.key,
+            index_ra!(remaining_accounts, 0).key,
+            escrow_payment_account.key,
         )?;
+        if payment_token_account_parsed.amount < buyer_price {
+            return Err(ErrorCode::InvalidTokenAmount.into());
+        }
+    } else {
+        return Err(ErrorCode::InvalidAccountState.into());
     }
 
     assert_metadata_valid(metadata, &token_mint.key())?;
-    let bts_bump = *ctx.bumps.get("buyer_trade_state").unwrap();
+    let bts_bump = ctx.bumps.buyer_trade_state;
     // create or reallocate the buyer trade state
     // after this call the correct size should be allocated and discriminator should be written
     create_or_realloc_buyer_trade_state(
         buyer_trade_state,
-        wallet,
+        payer,
         &[
             PREFIX.as_bytes(),
-            wallet.key().as_ref(),
+            ctx.accounts.wallet.key().as_ref(),
             auction_house.key().as_ref(),
             token_mint.key().as_ref(),
             &[bts_bump],
         ],
     )?;
 
-    let bts_v2 = BuyerTradeStateV2::from_bid_args(&BidArgs {
+    let bts_v2 = BuyerTradeStateV2 {
         auction_house_key: auction_house.key(),
-        buyer: wallet.key(),
+        buyer: ctx.accounts.wallet.key(),
         buyer_referral: buyer_referral.key(),
         buyer_price,
         token_mint: token_mint.key(),
@@ -121,7 +161,12 @@ pub fn handle<'info>(
         bump: bts_bump,
         buyer_creator_royalty_bp,
         expiry: get_default_buyer_state_expiry(buyer_state_expiry),
-    });
+        payment_mint: if is_spl {
+            index_ra!(remaining_accounts, 0).key()
+        } else {
+            Pubkey::default()
+        },
+    };
 
     // serialize
     let bts_v2_serialized = bts_v2.try_to_vec()?;
