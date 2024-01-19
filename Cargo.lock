@@ -208,7 +208,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c4fd6e43b2ca6220d2ef1641539e678bfc31b6cc393cf892b373b5997b6a39a"
 dependencies = [
  "anchor-lang",
- "mpl-token-metadata",
+ "mpl-token-metadata 3.3.0",
  "solana-program",
  "spl-associated-token-account",
  "spl-token",
@@ -1268,7 +1268,7 @@ dependencies = [
  "anchor-spl",
  "arrayref",
  "community-managed-token",
- "mpl-token-metadata",
+ "mpl-token-metadata 4.0.0",
  "open_creator_protocol",
  "solana-program",
  "spl-associated-token-account",
@@ -1325,6 +1325,19 @@ name = "mpl-token-metadata"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed613b555d758d2df9e0ac079ca6c43749a6f063630074cd7f5162b80ae417c7"
+dependencies = [
+ "borsh 0.10.3",
+ "num-derive 0.3.3",
+ "num-traits",
+ "solana-program",
+ "thiserror",
+]
+
+[[package]]
+name = "mpl-token-metadata"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "442bfb6479e149afe1ad5a1440de7b90abbcc7e6647709d89229a3c3fdbe3e12"
 dependencies = [
  "borsh 0.10.3",
  "num-derive 0.3.3",
@@ -1469,7 +1482,7 @@ dependencies = [
  "anchor-spl",
  "community-managed-token",
  "json-rules-engine-fork",
- "mpl-token-metadata",
+ "mpl-token-metadata 3.3.0",
  "serde",
  "serde_json",
  "solana-program",
