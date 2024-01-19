@@ -20,7 +20,7 @@ anchor-lang = { version = "0.29.0", features = ["init-if-needed"] }
 anchor-spl = "0.29.0"
 arrayref = "0.3.7"
 community-managed-token = { version = "0.3.0", features = ["no-entrypoint"] }
-mpl-token-metadata = { version = "3.2.3" }
+mpl-token-metadata = { version = "4.0.0" }
 open_creator_protocol = { version = "0.4.1", features = ["cpi"] }
 solana-program = "~1.16"
 spl-associated-token-account = { version = "2.2.0", features = [
